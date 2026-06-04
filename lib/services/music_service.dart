@@ -45,7 +45,11 @@ class MusicServices extends getx.GetxService {
     super.onInit();
   }
 
-  final dio = Dio();
+  final dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 8),
+    receiveTimeout: const Duration(seconds: 10),
+    sendTimeout: const Duration(seconds: 10),
+  ));
 
   Future<void> init() async {
     //check visitor id in data base, if not generate one , set lang code
@@ -110,23 +114,22 @@ class MusicServices extends getx.GetxService {
 
   Future<Response> _sendRequest(String action, Map<dynamic, dynamic> data,
       {additionalParams = ""}) async {
-    //print("$baseUrl$action$fixedParms$additionalParams          data:$data");
     try {
-      final response =
-          await dio.post("$baseUrl$action$fixedParms$additionalParams",
-              options: Options(
-                headers: _headers,
-              ),
-              data: data);
+      final response = await dio.post(
+        "$baseUrl$action$fixedParms$additionalParams",
+        options: Options(headers: _headers),
+        data: data,
+      );
 
       if (response.statusCode == 200) {
         return response;
-      } else {
-        return _sendRequest(action, data, additionalParams: additionalParams);
       }
+
+      throw NetworkError(
+          "Server error: ${response.statusCode ?? 'unknown status'}");
     } on DioException catch (e) {
       printINFO("Error $e");
-      throw NetworkError();
+      throw NetworkError.fromDio(e);
     }
   }
 
@@ -654,20 +657,26 @@ class MusicServices extends getx.GetxService {
 
     results = nav(results, ['sectionListRenderer', 'contents']);
 
-    if (results.length == 1 && results[0]['itemSectionRenderer'] != null) {
-      return searchResults;
-    }
-
     String? type;
 
     for (var res in results) {
-      String category;
-      if (res['musicShelfRenderer'] != null) {
-        dynamic itemResults = res['musicShelfRenderer']['contents'];
+      String? category;
+      dynamic itemResults;
+      final renderer = res['musicShelfRenderer'] ?? res['itemSectionRenderer'];
+      
+      if (renderer != null) {
+        if (res['musicShelfRenderer'] != null) {
+          itemResults = res['musicShelfRenderer']['contents'];
+          category = nav(res, ['musicShelfRenderer', ...title_text]);
+        } else {
+          itemResults = res['itemSectionRenderer']['contents'];
+        }
+        
+        category ??= "mixed";
         String? typeFilter = filter;
-        category = "mixed"; // Just a default value
         final mixedItems = parseSearchResults(itemResults,
             ['artist', 'playlist', 'song', 'video', 'station'], type, category);
+        
         if (filter == null) {
           for (var item in mixedItems) {
             final itemType = item.runtimeType == MediaItem
@@ -681,9 +690,21 @@ class MusicServices extends getx.GetxService {
             }
           }
         } else {
-          category = nav(res, ['musicShelfRenderer', ...title_text]);
+          if (res['musicShelfRenderer'] != null) {
+            category = nav(res, ['musicShelfRenderer', ...title_text]);
+          } else {
+            // Map filter back to UI expected category key when title is absent
+            if (filter == 'songs') category = 'Songs';
+            else if (filter == 'videos') category = 'Videos';
+            else if (filter == 'albums') category = 'Albums';
+            else if (filter == 'artists') category = 'Artists';
+            else if (filter == 'community_playlists') category = 'Community playlists';
+            else if (filter == 'featured_playlists') category = 'Featured playlists';
+          }
+          
+          category ??= "mixed";
           searchResults[category] = parseSearchResults(
-              res['musicShelfRenderer']['contents'],
+              itemResults,
               ['artist', 'playlist', 'song', 'video', 'station'],
               type,
               category);
@@ -693,17 +714,17 @@ class MusicServices extends getx.GetxService {
         continue;
       }
 
-      if (filter != null) {
+      if (filter != null && category != null) {
         requestFunc(additionalParams) async =>
             (await _sendRequest("search", data,
                     additionalParams: additionalParams))
                 .data;
         parseFunc(contents) => parseSearchResults(contents,
-            ['artist', 'playlist', 'song', 'video', 'station'], type, category);
+            ['artist', 'playlist', 'song', 'video', 'station'], type, category!);
 
         if (searchResults.containsKey(category)) {
           final x = await getContinuations(
-              res['musicShelfRenderer'],
+              renderer,
               'musicShelfContinuation',
               limit - ((searchResults[category] as List).length),
               requestFunc,
@@ -946,6 +967,21 @@ class MusicServices extends getx.GetxService {
   }
 }
 
-class NetworkError extends Error {
-  final message = "Network Error !";
+class NetworkError implements Exception {
+  final String message;
+
+  NetworkError([this.message = "Network Error !"]);
+
+  factory NetworkError.fromDio(DioException e) {
+    final type = e.type;
+    if (type == DioExceptionType.connectionTimeout ||
+        type == DioExceptionType.receiveTimeout ||
+        type == DioExceptionType.sendTimeout) {
+      return NetworkError("Request timed out. Please try again.");
+    }
+    if (type == DioExceptionType.connectionError) {
+      return NetworkError("Unable to reach the server. Check your connection.");
+    }
+    return NetworkError("Network Error !");
+  }
 }

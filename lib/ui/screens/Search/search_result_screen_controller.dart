@@ -14,6 +14,8 @@ class SearchResultScreenController extends GetxController
   final isSeparatedResultContentFetced = false.obs;
   final resultContent = <String, dynamic>{}.obs;
   final separatedResultContent = <String, dynamic>{}.obs;
+  final hasNetworkError = false.obs;
+  final networkErrorMessage = ''.obs;
   final musicServices = Get.find<MusicServices>();
   final queryString = ''.obs;
   final railItems = <String>[].obs;
@@ -30,6 +32,12 @@ class SearchResultScreenController extends GetxController
     _getInitSearchResult();
     Get.find<HomeScreenController>().whenHomeScreenOnTop();
     super.onReady();
+  }
+
+  Future<void> retry() async {
+    hasNetworkError.value = false;
+    networkErrorMessage.value = '';
+    await _getInitSearchResult();
   }
 
   Future<void> onDestinationSelected(int value,
@@ -52,25 +60,31 @@ class SearchResultScreenController extends GetxController
             separatedResultContent[railItems[value - 1]].isEmpty)) {
       final tabName = railItems[value - 1];
       final itemCount = (tabName == 'Songs' || tabName == 'Videos') ? 25 : 10;
-      final x = await musicServices.search(queryString.value,
-          filter: tabName.replaceAll(" ", "_").toLowerCase(), limit: itemCount, filterParams: resultContent['searchEndpoint'][tabName]);
-      separatedResultContent[tabName] = x[tabName];
-      additionalParamNext[tabName] = x['params'];
-      isSeparatedResultContentFetced.value = true;
-      final scrollController = scrollControllers[tabName];
-      (scrollController)!.addListener(() {
-        double maxScroll = scrollController.position.maxScrollExtent;
-        double currentScroll = scrollController.position.pixels;
-        if (currentScroll >= maxScroll / 2 &&
-            additionalParamNext[tabName]['additionalParams'] !=
-                '&ctoken=null&continuation=null') {
-          if (!continuationInProgress) {
-            printINFO("Acchhsk");
-            continuationInProgress = true;
-            getContinuationContents();
+      try {
+        final x = await musicServices.search(queryString.value,
+            filter: tabName.replaceAll(" ", "_").toLowerCase(),
+            limit: itemCount,
+            filterParams: resultContent['searchEndpoint'][tabName]);
+        separatedResultContent[tabName] = x[tabName];
+        additionalParamNext[tabName] = x['params'];
+        final scrollController = scrollControllers[tabName];
+        (scrollController)!.addListener(() {
+          double maxScroll = scrollController.position.maxScrollExtent;
+          double currentScroll = scrollController.position.pixels;
+          if (currentScroll >= maxScroll / 2 &&
+              additionalParamNext[tabName]['additionalParams'] !=
+                  '&ctoken=null&continuation=null') {
+            if (!continuationInProgress) {
+              printINFO("Acchhsk");
+              continuationInProgress = true;
+              getContinuationContents();
+            }
           }
-        }
-      });
+        });
+      } on NetworkError catch (e) {
+        hasNetworkError.value = true;
+        networkErrorMessage.value = e.message;
+      }
     }
     isSeparatedResultContentFetced.value = true;
   }
@@ -78,13 +92,18 @@ class SearchResultScreenController extends GetxController
   Future<void> getContinuationContents() async {
     final tabName = railItems[navigationRailCurrentIndex.value - 1];
 
-    final x =
-        await musicServices.getSearchContinuation(additionalParamNext[tabName]);
-    (separatedResultContent[tabName]).addAll(x[tabName]);
-    additionalParamNext[tabName] = x['params'];
-    separatedResultContent.refresh();
-
-    continuationInProgress = false;
+    try {
+      final x = await musicServices
+          .getSearchContinuation(additionalParamNext[tabName]);
+      (separatedResultContent[tabName]).addAll(x[tabName]);
+      additionalParamNext[tabName] = x['params'];
+      separatedResultContent.refresh();
+    } on NetworkError catch (e) {
+      hasNetworkError.value = true;
+      networkErrorMessage.value = e.message;
+    } finally {
+      continuationInProgress = false;
+    }
   }
 
   void viewAllCallback(String text) {
@@ -93,10 +112,19 @@ class SearchResultScreenController extends GetxController
 
   Future<void> _getInitSearchResult() async {
     isResultContentFetced.value = false;
+    hasNetworkError.value = false;
+    networkErrorMessage.value = '';
     final args = Get.arguments;
     if (args != null) {
       queryString.value = args;
-      resultContent.value = await musicServices.search(args);
+      try {
+        resultContent.value = await musicServices.search(args);
+      } on NetworkError catch (e) {
+        hasNetworkError.value = true;
+        networkErrorMessage.value = e.message;
+        isResultContentFetced.value = true;
+        return;
+      }
       final allKeys = resultContent.keys.where((element) => ([
             "Songs",
             "Videos",

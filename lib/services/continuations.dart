@@ -64,20 +64,26 @@ Future<List<dynamic>> getContinuations(
             : getContinuationParams(results, ctokenPath: ctokenPath));
     //print(additionalParams);
 
-    final Map<String, dynamic> response = await requestFunc(additionalParams);
-    //print("Checking........=${response.containsKey('continuationContents')}");
-    //inspect(response);
-    if (response.containsKey('continuationContents')) {
-      results = response['continuationContents'][continuationType];
-    } else {
-      break;
-    }
+    try {
+      final Map<String, dynamic> response = await requestFunc(additionalParams);
+      //print("Checking........=${response.containsKey('continuationContents')}");
+      //inspect(response);
+      if (response.containsKey('continuationContents')) {
+        results = response['continuationContents'][continuationType];
+      } else {
+        break;
+      }
 
-    final List<dynamic> contents = getContinuationContents(results, parseFunc);
-    if (contents.isEmpty) {
+      final List<dynamic> contents = getContinuationContents(results, parseFunc);
+      if (contents.isEmpty) {
+        break;
+      }
+      items.addAll(contents);
+    } catch (e) {
+      // Catch exceptions silently or print error and break the continuation loop
+      // to return whatever items have already been fetched.
       break;
     }
-    items.addAll(contents);
   }
   if (isAdditionparamReturnReq) {
     String additionalParam = (reloadable
@@ -103,17 +109,21 @@ Future<List<dynamic>> getValidatedContinuations(
     final String additionalParams =
         getContinuationParams(results, ctokenPath: ctokenPath);
 
-    final Map<String, dynamic> response =
-        await resendRequestUntilParsedResponseIsValid(
-            requestFunc,
-            additionalParams,
-            (response) => getParsedContinuationItems(
-                response, parseFunc, continuationType),
-            (parsed) => validateResponse(parsed, perPage, limit, items.length),
-            3);
+    try {
+      final Map<String, dynamic> response =
+          await resendRequestUntilParsedResponseIsValid(
+              requestFunc,
+              additionalParams,
+              (response) => getParsedContinuationItems(
+                  response, parseFunc, continuationType),
+              (parsed) => validateResponse(parsed, perPage, limit, items.length),
+              3);
 
-    results = response['results'];
-    items.addAll(response['parsed']);
+      results = response['results'];
+      items.addAll(response['parsed']);
+    } catch (e) {
+      break;
+    }
   }
   return items;
 }

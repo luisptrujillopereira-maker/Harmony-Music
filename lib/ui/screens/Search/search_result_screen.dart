@@ -119,7 +119,38 @@ class Body extends StatelessWidget {
   Widget build(BuildContext context) {
     if (searchResScrController.navigationRailCurrentIndex.value == 0) {
       return Obx(() {
-        if (searchResScrController.isResultContentFetced.isTrue &&
+        if (searchResScrController.hasNetworkError.isTrue &&
+            searchResScrController.isResultContentFetced.isTrue) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  "networkError1".tr,
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                if (searchResScrController.networkErrorMessage.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                    child: Text(
+                      searchResScrController.networkErrorMessage.value,
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () {
+                    searchResScrController.retry();
+                  },
+                  child: Text("retry".tr),
+                ),
+              ],
+            ),
+          );
+        } else if (searchResScrController.isResultContentFetced.isTrue &&
             searchResScrController.railItems.isEmpty) {
           return Center(
             child: Column(

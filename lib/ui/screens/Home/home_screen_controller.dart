@@ -20,6 +20,7 @@ class HomeScreenController extends GetxController {
   final tabIndex = 0.obs;
   final networkError = false.obs;
   final quickPicks = QuickPicks([]).obs;
+  final recentlyPlayedQuickPicks = Rxn<QuickPicks>();
   final middleContent = [].obs;
   final fixedContent = [].obs;
   final showVersionDialog = true.obs;
@@ -33,6 +34,15 @@ class HomeScreenController extends GetxController {
     super.onInit();
     loadContent();
     if (updateCheckFlag) _checkNewVersion();
+    
+    try {
+      Hive.box("LIBRP").watch().listen((event) {
+        _loadRecentlyPlayedForHome();
+        _applyNoveltyToQuickPicks();
+      });
+    } catch (e) {
+      printERROR("Failed to listen to recently played changes: $e");
+    }
   }
 
   Future<void> loadContent() async {
@@ -40,16 +50,25 @@ class HomeScreenController extends GetxController {
     final isCachedHomeScreenDataEnabled =
         box.get("cacheHomeScreenData") ?? true;
     if (isCachedHomeScreenDataEnabled) {
-      final loaded = await loadContentFromDb();
+      try {
+        final loaded = await loadContentFromDb();
 
-      if (loaded) {
-        final currTimeSecsDiff = DateTime.now().millisecondsSinceEpoch -
-            (box.get("homeScreenDataTime") ??
-                DateTime.now().millisecondsSinceEpoch);
-        if (currTimeSecsDiff / 1000 > 3600 * 8) {
-          loadContentFromNetwork(silent: true);
+        if (loaded) {
+          final currTimeSecsDiff = DateTime.now().millisecondsSinceEpoch -
+              (box.get("homeScreenDataTime") ??
+                  DateTime.now().millisecondsSinceEpoch);
+          if (currTimeSecsDiff / 1000 > 3600 * 8) {
+            loadContentFromNetwork(silent: true);
+          }
+        } else {
+          loadContentFromNetwork();
         }
-      } else {
+      } catch (e) {
+        printERROR("Failed to load content from DB: $e. Fetching fresh from network...");
+        try {
+          final homeScreenData = await Hive.openBox("homeScreenData");
+          await homeScreenData.clear();
+        } catch (_) {}
         loadContentFromNetwork();
       }
     } else {
@@ -57,8 +76,51 @@ class HomeScreenController extends GetxController {
     }
   }
 
+  String get greeting {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return "goodMorning".tr;
+    if (hour < 17) return "goodAfternoon".tr;
+    return "goodEvening".tr;
+  }
+
+  void _loadRecentlyPlayedForHome() {
+    try {
+      final box = Hive.box("LIBRP");
+      if (box.isEmpty) {
+        recentlyPlayedQuickPicks.value = null;
+        return;
+      }
+      final items = box.values
+          .map((e) => MediaItemBuilder.fromJson(e as Map))
+          .whereType<MediaItem>()
+          .toList()
+          .reversed
+          .take(6)
+          .toList();
+      if (items.isEmpty) {
+        recentlyPlayedQuickPicks.value = null;
+      } else {
+        recentlyPlayedQuickPicks.value =
+            QuickPicks(items, title: "recentlyPlayed".tr);
+      }
+    } catch (_) {
+      recentlyPlayedQuickPicks.value = null;
+    }
+  }
+
+  String _mapSectionTitle(String original) {
+    final lower = original.toLowerCase();
+    if (lower.contains('quick') || lower.contains('picks')) return "discoverNewSongsForYou".tr;
+    if (lower.contains('trending') || lower.contains('charts')) return "newReleases".tr;
+    if (lower.contains('like') || lower.contains('related') || lower.contains('because')) return "madeForYou".tr;
+    if (lower.contains('new') && lower.contains('release')) return "newReleases".tr;
+    if (lower.contains('mix') || lower.contains('radio')) return "madeForYou".tr;
+    return original;
+  }
+
   Future<bool> loadContentFromDb() async {
     final homeScreenData = await Hive.openBox("homeScreenData");
+    _loadRecentlyPlayedForHome();
     if (homeScreenData.keys.isNotEmpty) {
       final String quickPicksType = homeScreenData.get("quickPicksType");
       final List quickPicksData = homeScreenData.get("quickPicks");
@@ -90,6 +152,7 @@ class HomeScreenController extends GetxController {
     String contentType = box.get("discoverContentType") ?? "QP";
 
     networkError.value = false;
+    _loadRecentlyPlayedForHome();
     try {
       List middleContentTemp = [];
       final homeContentListMap = await _musicServices.getHome(
@@ -101,7 +164,7 @@ class HomeScreenController extends GetxController {
         if (index != -1 && index != 0) {
           quickPicks.value = QuickPicks(
               List<MediaItem>.from(homeContentListMap[index]["contents"]),
-              title: "Trending");
+              title: "discoverNewSongsForYou".tr);
         } else if (index == -1) {
           List charts = await _musicServices.getCharts(contentType);
           final index = charts.indexWhere((element) =>
@@ -110,7 +173,7 @@ class HomeScreenController extends GetxController {
           if (index != -1) {
             quickPicks.value = QuickPicks(
                 List<MediaItem>.from(charts[index]["contents"]),
-                title: charts[index]['title']);
+                title: "discoverNewSongsForYou".tr);
             middleContentTemp.addAll(charts);
           }
         }
@@ -120,7 +183,7 @@ class HomeScreenController extends GetxController {
         if (index != -1 && index != 0) {
           final con = homeContentListMap.removeAt(index);
           quickPicks.value = QuickPicks(List<MediaItem>.from(con["contents"]),
-              title: con["title"]);
+              title: "discoverNewSongsForYou".tr);
         } else if (index == -1) {
           List charts = await _musicServices.getCharts(contentType);
           final index = charts.indexWhere((element) =>
@@ -129,7 +192,7 @@ class HomeScreenController extends GetxController {
           if (index != -1) {
             quickPicks.value = QuickPicks(
                 List<MediaItem>.from(charts[index]["contents"]),
-                title: charts[index]["title"]);
+                title: "discoverNewSongsForYou".tr);
             middleContentTemp.addAll(charts);
           }
         }
@@ -141,7 +204,8 @@ class HomeScreenController extends GetxController {
                 songId, getContentHlCode()));
             final con = rel.removeAt(0);
             quickPicks.value =
-                QuickPicks(List<MediaItem>.from(con["contents"]));
+                QuickPicks(List<MediaItem>.from(con["contents"]),
+                    title: "discoverNewSongsForYou".tr);
             middleContentTemp.addAll(rel);
           }
         } catch (e) {
@@ -153,10 +217,33 @@ class HomeScreenController extends GetxController {
       if (quickPicks.value.songList.isEmpty) {
         final index = homeContentListMap
             .indexWhere((element) => element['title'] == "Quick picks");
-        final con = homeContentListMap.removeAt(index);
-        quickPicks.value = QuickPicks(List<MediaItem>.from(con["contents"]),
-            title: "Quick picks");
+        if (index != -1 && homeContentListMap[index]["contents"].isNotEmpty && homeContentListMap[index]["contents"][0] is MediaItem) {
+          final con = homeContentListMap.removeAt(index);
+          quickPicks.value = QuickPicks(List<MediaItem>.from(con["contents"]),
+              title: "discoverNewSongsForYou".tr);
+        } else {
+          final mediaItemSectionIndex = homeContentListMap.indexWhere((element) =>
+              element["contents"].isNotEmpty && element["contents"][0] is MediaItem);
+          if (mediaItemSectionIndex != -1) {
+            final con = homeContentListMap.removeAt(mediaItemSectionIndex);
+            quickPicks.value = QuickPicks(List<MediaItem>.from(con["contents"]),
+                title: "discoverNewSongsForYou".tr);
+          } else {
+            try {
+              final charts = await _musicServices.getCharts("TR");
+              final trIndex = charts.indexWhere((element) => element['title'] == "Trending");
+              if (trIndex != -1 && charts[trIndex]["contents"].isNotEmpty) {
+                quickPicks.value = QuickPicks(List<MediaItem>.from(charts[trIndex]["contents"]),
+                    title: "discoverNewSongsForYou".tr);
+              }
+            } catch (e) {
+              printERROR("Failed to load trending songs fallback: $e");
+            }
+          }
+        }
       }
+
+      _applyNoveltyToQuickPicks();
 
       middleContent.value = _setContentList(middleContentTemp);
       fixedContent.value = _setContentList(homeContentListMap);
@@ -172,6 +259,11 @@ class HomeScreenController extends GetxController {
       printERROR("Home Content not loaded due to ${r.message}");
       await Future.delayed(const Duration(seconds: 1));
       networkError.value = !silent;
+    } catch (e, stack) {
+      printERROR("Home Content not loaded due to unexpected parsing error: $e");
+      printERROR(stack);
+      await Future.delayed(const Duration(seconds: 1));
+      networkError.value = !silent;
     }
   }
 
@@ -184,14 +276,14 @@ class HomeScreenController extends GetxController {
       if ((content["contents"][0]).runtimeType == Playlist) {
         final tmp = PlaylistContent(
             playlistList: (content["contents"]).whereType<Playlist>().toList(),
-            title: content["title"]);
+            title: _mapSectionTitle(content["title"] ?? ""));
         if (tmp.playlistList.length >= 2) {
           contentTemp.add(tmp);
         }
       } else if ((content["contents"][0]).runtimeType == Album) {
         final tmp = AlbumContent(
             albumList: (content["contents"]).whereType<Album>().toList(),
-            title: content["title"]);
+            title: _mapSectionTitle(content["title"] ?? ""));
         if (tmp.albumList.length >= 2) {
           contentTemp.add(tmp);
         }
@@ -206,7 +298,7 @@ class HomeScreenController extends GetxController {
       final homeContentListMap = await _musicServices.getHome(limit: 3);
       quickPicks_ = QuickPicks(
           List<MediaItem>.from(homeContentListMap[0]["contents"]),
-          title: homeContentListMap[0]["title"]);
+          title: "discoverNewSongsForYou".tr);
     } else if (val == "TMV" || val == 'TR') {
       try {
         final charts = await _musicServices.getCharts(val);
@@ -215,7 +307,7 @@ class HomeScreenController extends GetxController {
             (val == "TMV" ? "Top Music Videos" : "Trending"));
         quickPicks_ = QuickPicks(
             List<MediaItem>.from(charts[index]["contents"]),
-            title: charts[index]["title"]);
+            title: "discoverNewSongsForYou".tr);
       } catch (e) {
         printERROR(
             "Seems ${val == "TMV" ? "Top music videos" : "Trending songs"} currently not available!");
@@ -227,9 +319,10 @@ class HomeScreenController extends GetxController {
           final value = await _musicServices.getContentRelatedToSong(
               songId, getContentHlCode());
           middleContent.value = _setContentList(value);
-          if (value.isNotEmpty && (value[0]['title']).contains("like")) {
+          if (value.isNotEmpty && value[0]["contents"].isNotEmpty && value[0]["contents"][0] is MediaItem) {
             quickPicks_ =
-                QuickPicks(List<MediaItem>.from(value[0]["contents"]));
+                QuickPicks(List<MediaItem>.from(value[0]["contents"]),
+                    title: "discoverNewSongsForYou".tr);
             Hive.box("AppPrefs").put("recentSongId", songId);
           }
           // ignore: empty_catches
@@ -239,11 +332,44 @@ class HomeScreenController extends GetxController {
     if (quickPicks_ == null) return;
 
     quickPicks.value = quickPicks_;
+    _applyNoveltyToQuickPicks();
 
     // set home content last update time
     cachedHomeScreenData(updateQuickPicksNMiddleContent: true);
     await Hive.box("AppPrefs")
         .put("homeScreenDataTime", DateTime.now().millisecondsSinceEpoch);
+  }
+
+  void _applyNoveltyToQuickPicks() {
+    if (quickPicks.value.songList.isEmpty) return;
+    final recentIds = _getRecentPlayedIds();
+    final list = quickPicks.value.songList.toList();
+    list.sort((a, b) {
+      final aPlayedRecently = recentIds.contains(a.id);
+      final bPlayedRecently = recentIds.contains(b.id);
+      if (aPlayedRecently == bPlayedRecently) {
+        return 0;
+      }
+      // Songs not played recently should come first
+      return aPlayedRecently ? 1 : -1;
+    });
+    quickPicks.value = QuickPicks(list,
+        title: quickPicks.value.title.isEmpty
+            ? "discoverNewSongsForYou".tr
+            : quickPicks.value.title);
+  }
+
+  Set<String> _getRecentPlayedIds() {
+    try {
+      final box = Hive.box("LIBRP");
+      return box.values
+          .map((e) =>
+              (e is Map && e.containsKey('videoId')) ? e['videoId'] as String : null)
+          .whereType<String>()
+          .toSet();
+    } catch (_) {
+      return {};
+    }
   }
 
   String getContentHlCode() {
